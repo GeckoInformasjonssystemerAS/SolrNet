@@ -16,9 +16,12 @@
 
 using System;
 using System.Collections.Generic;
+using System.Configuration;
 using System.IO;
 using System.Linq;
 using System.Net;
+using System.Net.Security;
+using System.Security.Cryptography.X509Certificates;
 using System.Text;
 using HttpWebAdapters;
 using HttpWebAdapters.Adapters;
@@ -33,6 +36,7 @@ namespace SolrNet.Impl {
     public class SolrConnection : ISolrConnection {
         private string serverURL;
         private string version = "2.2";
+		private static X509Certificate2 Certificate { get; set; }
 
         /// <summary>
         /// HTTP cache implementation
@@ -53,6 +57,16 @@ namespace SolrNet.Impl {
             Timeout = -1;
             Cache = new NullCache();
             HttpWebRequestFactory = new HttpWebRequestFactory();
+			if (ConfigurationManager.AppSettings["UseHttp"] == null || (ConfigurationManager.AppSettings["UseHttp"] != null && ConfigurationManager.AppSettings["UseHttp"].ToLower() != "true"))
+			{
+				var certificatePath = ConfigurationManager.AppSettings["CertificatePath"];
+				var certificatePassword = ConfigurationManager.AppSettings["CertificatePass"];
+
+				if (string.IsNullOrEmpty(certificatePath))
+					throw new ArgumentException("Path to certificate not set in web.config");
+
+				Certificate = new X509Certificate2(certificatePath, certificatePassword);
+			}
         }
 
         /// <summary>
@@ -101,11 +115,20 @@ namespace SolrNet.Impl {
             if (contentType != null)
                 request.ContentType = contentType;
 
-            request.ContentLength = content.Length;
-            request.ProtocolVersion = HttpVersion.Version11;
+			request.ContentLength = content.Length;
+			request.ProtocolVersion = HttpVersion.Version11;
 
+			if (Certificate != null) {
+				request.ProtocolVersion = HttpVersion.Version10;
+				request.PreAuthenticate = true;
+				request.ClientCertificates.Add(Certificate);
+				ServicePointManager.Expect100Continue = true;
+				ServicePointManager.SecurityProtocol = SecurityProtocolType.Ssl3;
+				ServicePointManager.ServerCertificateValidationCallback += AcceptSelfSignedCertificate;
+			}
+            
             try {
-                using (var postStream = request.GetRequestStream()) {
+				 using (var postStream = request.GetRequestStream()) {
                     CopyTo(content, postStream);
                 }
                 return GetResponse(request).Data;
@@ -145,6 +168,14 @@ namespace SolrNet.Impl {
                 request.ReadWriteTimeout = Timeout;
                 request.Timeout = Timeout;                
             }
+			if (Certificate != null) {
+				request.ProtocolVersion = HttpVersion.Version10;
+				request.PreAuthenticate = true;
+				request.ClientCertificates.Add(Certificate);
+				ServicePointManager.Expect100Continue = true;
+				ServicePointManager.SecurityProtocol = SecurityProtocolType.Ssl3;
+				ServicePointManager.ServerCertificateValidationCallback += AcceptSelfSignedCertificate;
+			}
             try {
                 var response = GetResponse(request);
                 if (response.ETag != null)
@@ -230,5 +261,10 @@ namespace SolrNet.Impl {
                 return Encoding.UTF8;
             }
         }
+
+		private static bool AcceptSelfSignedCertificate(object sender, X509Certificate certificate, X509Chain chain, SslPolicyErrors policyErrors)
+		{
+			return true;
+		}
     }
 }
